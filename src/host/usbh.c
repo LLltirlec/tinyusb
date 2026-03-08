@@ -497,6 +497,14 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
   // Skip if stack is not initialized
   if (!tuh_inited()) return;
 
+  // On PICO (no RTOS), limit events per call to avoid blocking main loop when multiple ports are active
+#if CFG_TUSB_OS == OPT_OS_PICO
+  #ifndef CFG_TUH_MAX_EVENTS_PER_TASK
+  #define CFG_TUH_MAX_EVENTS_PER_TASK 4
+  #endif
+  uint32_t events_processed = 0;
+#endif
+
   // Loop until there is no more events in the queue
   while (1) {
     hcd_event_t event;
@@ -600,6 +608,13 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
       default:
         break;
     }
+
+#if CFG_TUSB_OS == OPT_OS_PICO
+    events_processed++;
+    if (events_processed >= CFG_TUH_MAX_EVENTS_PER_TASK && !osal_queue_empty(_usbh_q)) {
+      return; // yield to main loop to reduce input lag when multiple USB host ports are active
+    }
+#endif
 
 #if CFG_TUSB_OS != OPT_OS_NONE && CFG_TUSB_OS != OPT_OS_PICO
     // return if there is no more events, for application to run other background
