@@ -226,7 +226,9 @@ static inline usbh_class_driver_t const *get_driver(uint8_t drv_id) {
 // sum of end device + hub
 #define TOTAL_DEVICES   (CFG_TUH_DEVICE_MAX + CFG_TUH_HUB)
 
-static uint8_t _usbh_controller = TUSB_INDEX_INVALID_8;
+// Bitmask of active root ports (rhport 1 = bit 0, rhport 2 = bit 1)
+#define RHPORT_BIT(rhport) (1u << ((rhport) - 1))
+static uint8_t _usbh_controller_mask = 0;
 
 // Device with address = 0 for enumeration
 static usbh_dev0_t _dev0;
@@ -282,8 +284,13 @@ static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t 
 // TODO rework time-related function later
 // weak and overridable
 TU_ATTR_WEAK void osal_task_delay(uint32_t msec) {
-  const uint32_t start = hcd_frame_number(_usbh_controller);
-  while ( ( hcd_frame_number(_usbh_controller) - start ) < msec ) {}
+  // Use first active rhport for frame number (same PIO USB controller)
+  uint8_t rhport = 1;
+  if (_usbh_controller_mask & RHPORT_BIT(1)) rhport = 1;
+  else if (_usbh_controller_mask & RHPORT_BIT(2)) rhport = 2;
+  else return;
+  const uint32_t start = hcd_frame_number(rhport);
+  while ( ( hcd_frame_number(rhport) - start ) < msec ) {}
 }
 #endif
 
@@ -321,7 +328,7 @@ tusb_speed_t tuh_speed_get(uint8_t dev_addr) {
 }
 
 bool tuh_rhport_is_active(uint8_t rhport) {
-  return _usbh_controller == rhport;
+  return (_usbh_controller_mask & RHPORT_BIT(rhport)) != 0;
 }
 
 bool tuh_rhport_reset_bus(uint8_t rhport, bool active) {
@@ -364,7 +371,7 @@ static void clear_device(usbh_device_t* dev) {
 }
 
 bool tuh_inited(void) {
-  return _usbh_controller != TUSB_INDEX_INVALID_8;
+  return _usbh_controller_mask != 0;
 }
 
 bool tuh_init(uint8_t rhport) {
@@ -417,7 +424,7 @@ bool tuh_init(uint8_t rhport) {
   }
 
   // Init host controller
-  _usbh_controller = rhport;;
+  _usbh_controller_mask |= RHPORT_BIT(rhport);
   TU_ASSERT(hcd_init(rhport));
   hcd_int_enable(rhport);
 
@@ -430,7 +437,7 @@ bool tuh_deinit(uint8_t rhport) {
   // deinit host controller
   hcd_int_disable(rhport);
   hcd_deinit(rhport);
-  _usbh_controller = TUSB_INDEX_INVALID_8;
+  _usbh_controller_mask &= ~RHPORT_BIT(rhport);
 
   // "unplug" all devices on this rhport (hub_addr = 0, hub_port = 0)
   process_removing_device(rhport, 0, 0);
@@ -831,11 +838,13 @@ uint8_t *usbh_get_enum_buf(void) {
 }
 
 void usbh_int_set(bool enabled) {
-  // TODO all host controller if multiple are used since they shared the same event queue
+  // Enable/disable interrupt for all active host controllers
   if (enabled) {
-    hcd_int_enable(_usbh_controller);
+    if (_usbh_controller_mask & RHPORT_BIT(1)) hcd_int_enable(1);
+    if (_usbh_controller_mask & RHPORT_BIT(2)) hcd_int_enable(2);
   } else {
-    hcd_int_disable(_usbh_controller);
+    if (_usbh_controller_mask & RHPORT_BIT(1)) hcd_int_disable(1);
+    if (_usbh_controller_mask & RHPORT_BIT(2)) hcd_int_disable(2);
   }
 }
 
